@@ -374,6 +374,17 @@ jobs:
           access_file="$RUNNER_TEMP/openclaw-access.txt"
           gateway_log="$RUNNER_TEMP/openclaw-gateway.log"
           tailscale_log="$RUNNER_TEMP/tailscale-status.json"
+          tailscale_serve_status="$RUNNER_TEMP/tailscale-serve-status.txt"
+          gateway_cmd=(openclaw gateway)
+
+          case "$TAILSCALE_MODE" in
+            serve)
+              gateway_cmd+=(--tailscale serve)
+              ;;
+            tailnet-ip)
+              gateway_cmd+=(--gateway-bind tailnet)
+              ;;
+          esac
 
           cleanup() {
             if [[ -n "${APPROVER_PID:-}" ]]; then
@@ -386,7 +397,11 @@ jobs:
           }
           trap cleanup EXIT
 
-          stdbuf -oL -eL openclaw gateway >"$gateway_log" 2>&1 &
+          printf 'Gateway command:'
+          printf ' %q' "${gateway_cmd[@]}"
+          printf '\n'
+
+          stdbuf -oL -eL "${gateway_cmd[@]}" >"$gateway_log" 2>&1 &
           GATEWAY_PID=$!
 
           for _ in $(seq 1 30); do
@@ -436,6 +451,7 @@ jobs:
 
           if [[ "$TAILSCALE_MODE" == "serve" ]]; then
             tailscale status --json >"$tailscale_log"
+            tailscale serve status >"$tailscale_serve_status" 2>&1 || true
             if command -v jq >/dev/null 2>&1; then
               ts_dns="$(jq -r '.Self.DNSName // empty' "$tailscale_log" | sed 's/\.$//')"
             else
@@ -447,6 +463,7 @@ jobs:
               echo "control_ui=https://$ts_dns/" >> "$access_file"
               echo "Control UI  : https://$ts_dns/"
               echo "Pairing     : auto-approve loop is active"
+              echo "Serve status: $tailscale_serve_status"
               if [[ "$AUTH_CHOICE" == "openai-codex" ]]; then
                 echo "OAuth note  : Control UI access works, but Codex OAuth itself still needs imported oauth.json or a gateway-shell login flow"
               fi
@@ -499,5 +516,6 @@ jobs:
             ${{ runner.temp }}/openclaw-access.txt
             ${{ runner.temp }}/openclaw-gateway.log
             ${{ runner.temp }}/tailscale-status.json
+            ${{ runner.temp }}/tailscale-serve-status.txt
             ${{ runner.temp }}/openclaw-home/.openclaw
             ${{ github.workspace }}/.openclaw-workspace
