@@ -67,7 +67,6 @@ jobs:
       CUSTOM_MODEL_ID: ${{ inputs.custom_model_id }}
       CUSTOM_PROVIDER_ID: ${{ inputs.custom_provider_id }}
       CUSTOM_COMPATIBILITY: ${{ inputs.custom_compatibility }}
-      OPENCLAW_RUN_HOME: ${{ runner.temp }}/openclaw-home
       OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
       ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
       OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
@@ -78,6 +77,12 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Initialize runtime paths
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "OPENCLAW_RUN_HOME=$RUNNER_TEMP/openclaw-home" >> "$GITHUB_ENV"
 
       - name: Validate inputs and secrets
         shell: bash
@@ -329,5 +334,5 @@ jobs:
           path: |
             ${{ runner.temp }}/openclaw-gateway.log
             ${{ runner.temp }}/tailscale-status.json
-            ${{ env.OPENCLAW_RUN_HOME }}/.openclaw
+            ${{ runner.temp }}/openclaw-home/.openclaw
             ${{ github.workspace }}/.openclaw-workspace
