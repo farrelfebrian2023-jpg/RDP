@@ -253,6 +253,18 @@ jobs:
           command -v openclaw
           openclaw --version
 
+          corepack enable
+          echo "pnpm version: $(pnpm --version)"
+
+          OPENCLAW_PACKAGE_DIR="$(npm root -g)/openclaw"
+          if [[ ! -f "$OPENCLAW_PACKAGE_DIR/package.json" ]]; then
+            echo "::error::OpenClaw package root not found at $OPENCLAW_PACKAGE_DIR"
+            exit 1
+          fi
+
+          echo "OpenClaw package dir: $OPENCLAW_PACKAGE_DIR"
+          pnpm --dir "$OPENCLAW_PACKAGE_DIR" ui:build
+
       - name: Onboard OpenClaw
         shell: bash
         run: |
