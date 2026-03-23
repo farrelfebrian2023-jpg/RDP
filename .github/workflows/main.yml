@@ -21,9 +21,9 @@ on:
         default: "180"
         type: string
       tailscale_mode:
-        description: Remote access mode
+        description: Remote access mode (`serve` requires TAILSCALE_AUTHKEY)
         required: true
-        default: serve
+        default: off
         type: choice
         options:
           - serve
@@ -67,6 +67,7 @@ jobs:
       CUSTOM_MODEL_ID: ${{ inputs.custom_model_id }}
       CUSTOM_PROVIDER_ID: ${{ inputs.custom_provider_id }}
       CUSTOM_COMPATIBILITY: ${{ inputs.custom_compatibility }}
+      OPENCLAW_RUN_HOME: ${{ runner.temp }}/openclaw-home
       OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
       ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
       OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
@@ -154,11 +155,9 @@ jobs:
         run: |
           set -euo pipefail
 
-          export OPENCLAW_RUN_HOME="$RUNNER_TEMP/openclaw-home"
           export OPENCLAW_NO_PROMPT=1
 
           mkdir -p "$OPENCLAW_RUN_HOME"
-          echo "OPENCLAW_RUN_HOME=$OPENCLAW_RUN_HOME" >> "$GITHUB_ENV"
 
           curl -fsSL --proto '=https' --tlsv1.2 https://openclaw.ai/install.sh | bash -s -- --no-onboard
 
