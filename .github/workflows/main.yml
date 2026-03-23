@@ -80,6 +80,11 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Set up Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
       - name: Initialize runtime paths
         shell: bash
         run: |
@@ -184,13 +189,40 @@ jobs:
 
           mkdir -p "$OPENCLAW_RUN_HOME"
 
+          echo "Node before install: $(node --version)"
+          echo "npm before install: $(npm --version)"
+
           curl -fsSL --proto '=https' --tlsv1.2 https://openclaw.ai/install.sh | bash -s -- --no-onboard
 
-          OPENCLAW_BIN="$(npm prefix -g)/bin"
+          candidate_bins=(
+            "$HOME/.local/bin"
+            "$HOME/.npm-global/bin"
+            "$(npm prefix -g)/bin"
+          )
+
+          OPENCLAW_BIN=""
+          for bin_dir in "${candidate_bins[@]}"; do
+            if [[ -x "$bin_dir/openclaw" ]]; then
+              OPENCLAW_BIN="$bin_dir"
+              break
+            fi
+          done
+
+          if [[ -z "$OPENCLAW_BIN" ]]; then
+            echo "::error::openclaw binary not found after install."
+            printf 'Checked paths:\n%s\n' "${candidate_bins[@]}"
+            exit 1
+          fi
+
+          export PATH="$OPENCLAW_BIN:$PATH"
           echo "$OPENCLAW_BIN" >> "$GITHUB_PATH"
           echo "OPENCLAW_BIN=$OPENCLAW_BIN" >> "$GITHUB_ENV"
 
-          "$OPENCLAW_BIN/openclaw" --version
+          echo "Node after install: $(node --version)"
+          echo "npm after install: $(npm --version)"
+          echo "OpenClaw bin: $OPENCLAW_BIN"
+          command -v openclaw
+          openclaw --version
 
       - name: Onboard OpenClaw
         shell: bash
