@@ -4,11 +4,12 @@ on:
   workflow_dispatch:
     inputs:
       auth_choice:
-        description: Model provider for non-interactive onboarding
+        description: Model provider for onboarding (`skip` or `openai-codex` avoids API-key requirement)
         required: true
-        default: openai-api-key
+        default: skip
         type: choice
         options:
+          - openai-codex
           - openai-api-key
           - anthropic-api-key
           - openrouter-api-key
@@ -72,6 +73,7 @@ jobs:
       OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
       GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
       CUSTOM_API_KEY: ${{ secrets.CUSTOM_API_KEY }}
+      OPENCLAW_OAUTH_JSON_B64: ${{ secrets.OPENCLAW_OAUTH_JSON_B64 }}
       TAILSCALE_AUTHKEY: ${{ secrets.TAILSCALE_AUTHKEY || secrets.TAILSCALE_AUTH_KEY }}
 
     steps:
@@ -105,6 +107,9 @@ jobs:
           fi
 
           case "$AUTH_CHOICE" in
+            openai-codex)
+              echo "OpenAI Codex OAuth selected. The workflow will start OpenClaw without an API key; complete OAuth after the gateway is reachable."
+              ;;
             openai-api-key)
               [[ -n "${OPENAI_API_KEY:-}" ]] || {
                 echo "::error::Missing OPENAI_API_KEY secret."
@@ -147,6 +152,21 @@ jobs:
               exit 1
               ;;
           esac
+
+      - name: Import optional OAuth credentials
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [[ -z "${OPENCLAW_OAUTH_JSON_B64:-}" ]]; then
+            exit 0
+          fi
+
+          cred_dir="$OPENCLAW_RUN_HOME/.openclaw/credentials"
+          mkdir -p "$cred_dir"
+          printf '%s' "$OPENCLAW_OAUTH_JSON_B64" | base64 -d > "$cred_dir/oauth.json"
+          chmod 600 "$cred_dir/oauth.json"
+          echo "Imported OAuth credentials into OpenClaw state."
 
       - name: Connect runner to Tailscale
         if: ${{ inputs.tailscale_mode == 'serve' }}
@@ -209,6 +229,9 @@ jobs:
           fi
 
           case "$AUTH_CHOICE" in
+            openai-codex)
+              cmd+=(--auth-choice skip)
+              ;;
             openai-api-key)
               cmd+=(--auth-choice openai-api-key)
               ;;
@@ -239,6 +262,11 @@ jobs:
           esac
 
           "${cmd[@]}"
+
+          if [[ "$AUTH_CHOICE" == "openai-codex" ]]; then
+            openclaw config set agents.defaults.model.primary "openai-codex/gpt-5.4"
+          fi
+
           openclaw doctor --non-interactive || true
 
       - name: Run OpenClaw session
@@ -292,6 +320,17 @@ jobs:
           echo "Session     : ${SESSION_MINUTES} minutes"
           echo "Workspace   : $GITHUB_WORKSPACE/.openclaw-workspace"
           echo "Gateway log : $gateway_log"
+          if [[ -f "$OPENCLAW_RUN_HOME/.openclaw/credentials/oauth.json" ]]; then
+            echo "OAuth creds : imported from OPENCLAW_OAUTH_JSON_B64"
+          fi
+
+          if [[ "$AUTH_CHOICE" == "openai-codex" ]]; then
+            echo "Model auth  : deferred"
+            echo "Next step   : complete OAuth with 'openclaw models auth login --provider openai-codex'"
+          elif [[ "$AUTH_CHOICE" == "skip" ]]; then
+            echo "Model auth  : skipped"
+            echo "Next step   : configure a provider later from OpenClaw"
+          fi
 
           if [[ "$TAILSCALE_MODE" == "serve" ]]; then
             tailscale status --json >"$tailscale_log"
@@ -303,11 +342,17 @@ jobs:
             if [[ -n "$ts_dns" ]]; then
               echo "Control UI  : https://$ts_dns/"
               echo "Pairing     : auto-approve loop is active"
+              if [[ "$AUTH_CHOICE" == "openai-codex" ]]; then
+                echo "OAuth note  : use the Control UI or host shell to finish Codex OAuth once connected"
+              fi
             else
               echo "Control UI  : tailscale connected, but DNS name could not be resolved from status output"
             fi
           else
             echo "Control UI  : local-only (set tailscale_mode=serve for remote access)"
+            if [[ "$AUTH_CHOICE" == "openai-codex" ]]; then
+              echo "OAuth note  : GitHub-hosted runners need remote access to finish browser OAuth; use tailscale_mode=serve"
+            fi
           fi
 
           echo "==========================="
