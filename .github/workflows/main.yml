@@ -76,6 +76,7 @@ jobs:
       CUSTOM_API_KEY: ${{ secrets.CUSTOM_API_KEY }}
       OPENCLAW_OAUTH_JSON_B64: ${{ secrets.OPENCLAW_OAUTH_JSON_B64 }}
       TAILSCALE_AUTHKEY: ${{ secrets.TAILSCALE_AUTHKEY || secrets.TAILSCALE_AUTH_KEY }}
+      OPENCLAW_SOURCE_DIR: ${{ runner.temp }}/openclaw-src
 
     steps:
       - name: Checkout
@@ -217,16 +218,17 @@ jobs:
           export OPENCLAW_NO_PROMPT=1
 
           mkdir -p "$OPENCLAW_RUN_HOME"
+          mkdir -p "$OPENCLAW_SOURCE_DIR"
 
           echo "Node before install: $(node --version)"
           echo "npm before install: $(npm --version)"
 
-          curl -fsSL --proto '=https' --tlsv1.2 https://openclaw.ai/install.sh | bash -s -- --no-onboard
+          curl -fsSL --proto '=https' --tlsv1.2 https://openclaw.ai/install.sh | bash -s -- --install-method git --git-dir "$OPENCLAW_SOURCE_DIR" --no-onboard
 
           candidate_bins=(
             "$HOME/.local/bin"
+            "$OPENCLAW_SOURCE_DIR/node_modules/.bin"
             "$HOME/.npm-global/bin"
-            "$(npm prefix -g)/bin"
           )
 
           OPENCLAW_BIN=""
@@ -256,14 +258,13 @@ jobs:
           corepack enable
           echo "pnpm version: $(pnpm --version)"
 
-          OPENCLAW_PACKAGE_DIR="$(npm root -g)/openclaw"
-          if [[ ! -f "$OPENCLAW_PACKAGE_DIR/package.json" ]]; then
-            echo "::error::OpenClaw package root not found at $OPENCLAW_PACKAGE_DIR"
+          if [[ ! -f "$OPENCLAW_SOURCE_DIR/package.json" ]]; then
+            echo "::error::OpenClaw source checkout not found at $OPENCLAW_SOURCE_DIR"
             exit 1
           fi
 
-          echo "OpenClaw package dir: $OPENCLAW_PACKAGE_DIR"
-          pnpm --dir "$OPENCLAW_PACKAGE_DIR" ui:build
+          echo "OpenClaw source dir: $OPENCLAW_SOURCE_DIR"
+          pnpm --dir "$OPENCLAW_SOURCE_DIR" ui:build
 
       - name: Onboard OpenClaw
         shell: bash
