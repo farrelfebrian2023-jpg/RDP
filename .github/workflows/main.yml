@@ -76,7 +76,6 @@ jobs:
       CUSTOM_API_KEY: ${{ secrets.CUSTOM_API_KEY }}
       OPENCLAW_OAUTH_JSON_B64: ${{ secrets.OPENCLAW_OAUTH_JSON_B64 }}
       TAILSCALE_AUTHKEY: ${{ secrets.TAILSCALE_AUTHKEY || secrets.TAILSCALE_AUTH_KEY }}
-      OPENCLAW_SOURCE_DIR: ${{ runner.temp }}/openclaw-src
 
     steps:
       - name: Checkout
@@ -92,6 +91,7 @@ jobs:
         run: |
           set -euo pipefail
           echo "OPENCLAW_RUN_HOME=$RUNNER_TEMP/openclaw-home" >> "$GITHUB_ENV"
+          echo "OPENCLAW_SOURCE_DIR=$RUNNER_TEMP/openclaw-src" >> "$GITHUB_ENV"
 
       - name: Validate inputs and secrets
         shell: bash
