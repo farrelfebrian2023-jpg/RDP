@@ -22,12 +22,13 @@ on:
         default: "180"
         type: string
       tailscale_mode:
-        description: Remote access mode (`serve` requires TAILSCALE_AUTHKEY)
+        description: Remote access mode (`serve` = HTTPS recommended, `tailnet-ip` = HTTP break-glass, both require TAILSCALE_AUTHKEY)
         required: true
         default: off
         type: choice
         options:
           - serve
+          - tailnet-ip
           - off
       custom_base_url:
         description: Custom provider base URL (custom-api-key only)
@@ -106,8 +107,8 @@ jobs:
             exit 1
           fi
 
-          if [[ "$TAILSCALE_MODE" == "serve" && -z "${TAILSCALE_AUTHKEY:-}" ]]; then
-            echo "::error::tailscale_mode=serve requires secret TAILSCALE_AUTHKEY or TAILSCALE_AUTH_KEY."
+          if [[ "$TAILSCALE_MODE" != "off" && -z "${TAILSCALE_AUTHKEY:-}" ]]; then
+            echo "::error::tailscale_mode=$TAILSCALE_MODE requires secret TAILSCALE_AUTHKEY or TAILSCALE_AUTH_KEY."
             exit 1
           fi
 
@@ -174,11 +175,39 @@ jobs:
           echo "Imported OAuth credentials into OpenClaw state."
 
       - name: Connect runner to Tailscale
-        if: ${{ inputs.tailscale_mode == 'serve' }}
+        if: ${{ inputs.tailscale_mode != 'off' }}
         uses: tailscale/github-action@v4
         with:
           authkey: ${{ secrets.TAILSCALE_AUTHKEY || secrets.TAILSCALE_AUTH_KEY }}
           version: latest
+
+      - name: Detect Tailscale endpoints
+        if: ${{ inputs.tailscale_mode != 'off' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          tailscale status --json > "$RUNNER_TEMP/tailscale-status.json"
+          ts_ip="$(tailscale ip -4 | head -n 1 | tr -d '\r')"
+
+          if [[ -z "$ts_ip" ]]; then
+            echo "::error::Failed to obtain a Tailscale IPv4 address."
+            exit 1
+          fi
+
+          if command -v jq >/dev/null 2>&1; then
+            ts_dns="$(jq -r '.Self.DNSName // empty' "$RUNNER_TEMP/tailscale-status.json" | sed 's/\.$//')"
+          else
+            ts_dns="$(grep -oE '\"DNSName\":\"[^\"]+\"' "$RUNNER_TEMP/tailscale-status.json" | head -n 1 | cut -d '"' -f 4 | sed 's/\.$//')"
+          fi
+
+          echo "TAILSCALE_IP=$ts_ip" >> "$GITHUB_ENV"
+          echo "TAILSCALE_DNS=$ts_dns" >> "$GITHUB_ENV"
+
+          echo "Tailscale IPv4: $ts_ip"
+          if [[ -n "$ts_dns" ]]; then
+            echo "Tailscale DNS: $ts_dns"
+          fi
 
       - name: Install OpenClaw
         shell: bash
@@ -232,12 +261,27 @@ jobs:
           export HOME="$OPENCLAW_RUN_HOME"
           export PATH="$OPENCLAW_BIN:$PATH"
           export OPENCLAW_GATEWAY_TOKEN="$(openssl rand -hex 32)"
+          if [[ "$TAILSCALE_MODE" == "tailnet-ip" ]]; then
+            export OPENCLAW_ALLOW_INSECURE_PRIVATE_WS=1
+          fi
 
           echo "::add-mask::$OPENCLAW_GATEWAY_TOKEN"
           echo "OPENCLAW_GATEWAY_TOKEN=$OPENCLAW_GATEWAY_TOKEN" >> "$GITHUB_ENV"
 
           workspace_dir="$GITHUB_WORKSPACE/.openclaw-workspace"
           mkdir -p "$workspace_dir"
+
+          gateway_bind="loopback"
+          tailscale_args=()
+
+          case "$TAILSCALE_MODE" in
+            serve)
+              tailscale_args=(--tailscale serve)
+              ;;
+            tailnet-ip)
+              gateway_bind="tailnet"
+              ;;
+          esac
 
           cmd=(
             openclaw onboard
@@ -246,7 +290,7 @@ jobs:
             --workspace "$workspace_dir"
             --secret-input-mode ref
             --gateway-port 18789
-            --gateway-bind loopback
+            --gateway-bind "$gateway_bind"
             --gateway-auth token
             --gateway-token-ref-env OPENCLAW_GATEWAY_TOKEN
             --no-install-daemon
@@ -256,9 +300,7 @@ jobs:
             --accept-risk
           )
 
-          if [[ "$TAILSCALE_MODE" == "serve" ]]; then
-            cmd+=(--tailscale serve)
-          fi
+          cmd+=("${tailscale_args[@]}")
 
           case "$AUTH_CHOICE" in
             openai-codex)
@@ -299,7 +341,25 @@ jobs:
             openclaw config set agents.defaults.model.primary "openai-codex/gpt-5.4"
           fi
 
-          openclaw doctor --non-interactive || true
+          if [[ "$AUTH_CHOICE" == "skip" || "$AUTH_CHOICE" == "openai-codex" ]]; then
+            openclaw config set agents.defaults.memorySearch.enabled false
+          fi
+
+          if [[ "$TAILSCALE_MODE" == "serve" && -n "${TAILSCALE_DNS:-}" ]]; then
+            openclaw config set gateway.controlUi.allowedOrigins "[\"https://$TAILSCALE_DNS\"]" --strict-json
+          fi
+
+          if [[ "$TAILSCALE_MODE" == "tailnet-ip" ]]; then
+            if [[ -z "${TAILSCALE_IP:-}" ]]; then
+              echo "::error::TAILSCALE_IP is required for tailscale_mode=tailnet-ip."
+              exit 1
+            fi
+
+            openclaw config set gateway.controlUi.allowedOrigins "[\"http://$TAILSCALE_IP:18789\"]" --strict-json
+            openclaw config set gateway.controlUi.dangerouslyDisableDeviceAuth true
+          fi
+
+          openclaw config validate
 
       - name: Run OpenClaw session
         shell: bash
@@ -308,6 +368,10 @@ jobs:
 
           export HOME="$OPENCLAW_RUN_HOME"
           export PATH="$OPENCLAW_BIN:$PATH"
+          if [[ "$TAILSCALE_MODE" == "tailnet-ip" ]]; then
+            export OPENCLAW_ALLOW_INSECURE_PRIVATE_WS=1
+          fi
+          access_file="$RUNNER_TEMP/openclaw-access.txt"
           gateway_log="$RUNNER_TEMP/openclaw-gateway.log"
           tailscale_log="$RUNNER_TEMP/tailscale-status.json"
 
@@ -358,11 +422,17 @@ jobs:
 
           if [[ "$AUTH_CHOICE" == "openai-codex" ]]; then
             echo "Model auth  : deferred"
-            echo "Next step   : complete OAuth with 'openclaw models auth login --provider openai-codex'"
+            echo "Next step   : import OPENCLAW_OAUTH_JSON_B64 or run 'openclaw models auth login --provider openai-codex' on the gateway host"
           elif [[ "$AUTH_CHOICE" == "skip" ]]; then
             echo "Model auth  : skipped"
             echo "Next step   : configure a provider later from OpenClaw"
           fi
+
+          {
+            echo "auth_choice=$AUTH_CHOICE"
+            echo "session_minutes=$SESSION_MINUTES"
+            echo "workspace=$GITHUB_WORKSPACE/.openclaw-workspace"
+          } > "$access_file"
 
           if [[ "$TAILSCALE_MODE" == "serve" ]]; then
             tailscale status --json >"$tailscale_log"
@@ -372,18 +442,35 @@ jobs:
               ts_dns="$(grep -oE '\"DNSName\":\"[^\"]+\"' "$tailscale_log" | head -n 1 | cut -d '"' -f 4 | sed 's/\.$//')"
             fi
             if [[ -n "$ts_dns" ]]; then
+              echo "tailscale_mode=serve" >> "$access_file"
+              echo "tailscale_ip=${TAILSCALE_IP:-}" >> "$access_file"
+              echo "control_ui=https://$ts_dns/" >> "$access_file"
               echo "Control UI  : https://$ts_dns/"
               echo "Pairing     : auto-approve loop is active"
               if [[ "$AUTH_CHOICE" == "openai-codex" ]]; then
-                echo "OAuth note  : use the Control UI or host shell to finish Codex OAuth once connected"
+                echo "OAuth note  : Control UI access works, but Codex OAuth itself still needs imported oauth.json or a gateway-shell login flow"
               fi
             else
               echo "Control UI  : tailscale connected, but DNS name could not be resolved from status output"
             fi
+          elif [[ "$TAILSCALE_MODE" == "tailnet-ip" ]]; then
+            echo "tailscale_mode=tailnet-ip" >> "$access_file"
+            echo "tailscale_ip=${TAILSCALE_IP:-}" >> "$access_file"
+            echo "control_ui=http://${TAILSCALE_IP}:18789/" >> "$access_file"
+            echo "dashboard_bootstrap_url=http://${TAILSCALE_IP}:18789/#token=${OPENCLAW_GATEWAY_TOKEN}" >> "$access_file"
+            echo "gateway_token=${OPENCLAW_GATEWAY_TOKEN}" >> "$access_file"
+            echo "note=tailnet-ip uses plain HTTP and sets gateway.controlUi.dangerouslyDisableDeviceAuth=true for this ephemeral run" >> "$access_file"
+            echo "Control UI  : http://${TAILSCALE_IP}:18789/"
+            echo "Auth        : use the bootstrap URL or token saved in artifact openclaw-access.txt"
+            echo "Security    : break-glass mode; device auth disabled for this ephemeral run"
+            if [[ "$AUTH_CHOICE" == "openai-codex" ]]; then
+              echo "OAuth note  : UI is reachable over the tailnet IP, but Codex OAuth itself still needs imported oauth.json or a gateway-shell login flow"
+            fi
           else
+            echo "tailscale_mode=off" >> "$access_file"
             echo "Control UI  : local-only (set tailscale_mode=serve for remote access)"
             if [[ "$AUTH_CHOICE" == "openai-codex" ]]; then
-              echo "OAuth note  : GitHub-hosted runners need remote access to finish browser OAuth; use tailscale_mode=serve"
+              echo "OAuth note  : GitHub-hosted runners need remote access to inspect the UI; Codex OAuth itself still needs imported oauth.json or a gateway-shell login flow"
             fi
           fi
 
@@ -409,6 +496,7 @@ jobs:
           name: openclaw-run-${{ github.run_id }}
           if-no-files-found: warn
           path: |
+            ${{ runner.temp }}/openclaw-access.txt
             ${{ runner.temp }}/openclaw-gateway.log
             ${{ runner.temp }}/tailscale-status.json
             ${{ runner.temp }}/openclaw-home/.openclaw
