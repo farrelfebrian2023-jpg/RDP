@@ -1,120 +1,334 @@
-name: RDP
+name: OpenClaw Runner
 
 on:
   workflow_dispatch:
+    inputs:
+      auth_choice:
+        description: Model provider for non-interactive onboarding
+        required: true
+        default: openai-api-key
+        type: choice
+        options:
+          - openai-api-key
+          - anthropic-api-key
+          - openrouter-api-key
+          - gemini-api-key
+          - custom-api-key
+          - skip
+      session_minutes:
+        description: Keep the runner alive for this many minutes (5-330)
+        required: true
+        default: "180"
+        type: string
+      tailscale_mode:
+        description: Remote access mode
+        required: true
+        default: serve
+        type: choice
+        options:
+          - serve
+          - off
+      custom_base_url:
+        description: Custom provider base URL (custom-api-key only)
+        required: false
+        default: ""
+        type: string
+      custom_model_id:
+        description: Custom provider model id (custom-api-key only)
+        required: false
+        default: ""
+        type: string
+      custom_provider_id:
+        description: Optional custom provider id
+        required: false
+        default: ""
+        type: string
+      custom_compatibility:
+        description: Custom provider compatibility
+        required: true
+        default: openai
+        type: choice
+        options:
+          - openai
+          - anthropic
 
 jobs:
-  secure-rdp:
-    runs-on: windows-latest
-    timeout-minutes: 3600
+  openclaw:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 355
+    permissions:
+      contents: read
+
+    env:
+      AUTH_CHOICE: ${{ inputs.auth_choice }}
+      SESSION_MINUTES: ${{ inputs.session_minutes }}
+      TAILSCALE_MODE: ${{ inputs.tailscale_mode }}
+      CUSTOM_BASE_URL: ${{ inputs.custom_base_url }}
+      CUSTOM_MODEL_ID: ${{ inputs.custom_model_id }}
+      CUSTOM_PROVIDER_ID: ${{ inputs.custom_provider_id }}
+      CUSTOM_COMPATIBILITY: ${{ inputs.custom_compatibility }}
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+      GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+      CUSTOM_API_KEY: ${{ secrets.CUSTOM_API_KEY }}
+      TAILSCALE_AUTHKEY: ${{ secrets.TAILSCALE_AUTHKEY || secrets.TAILSCALE_AUTH_KEY }}
 
     steps:
-      - name: Configure Core RDP Settings
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Validate inputs and secrets
+        shell: bash
         run: |
-          $ErrorActionPreference = "Stop"
+          set -euo pipefail
 
-          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0 -Force
-          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "UserAuthentication" -Value 0 -Force
-          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "SecurityLayer" -Value 0 -Force
+          if ! [[ "$SESSION_MINUTES" =~ ^[0-9]+$ ]]; then
+            echo "::error::session_minutes must be an integer."
+            exit 1
+          fi
 
-          netsh advfirewall firewall delete rule name="RDP-Tailscale" 2>$null
+          if (( SESSION_MINUTES < 5 || SESSION_MINUTES > 330 )); then
+            echo "::error::session_minutes must be between 5 and 330."
+            exit 1
+          fi
 
-          netsh advfirewall firewall add rule name="RDP-Tailscale" dir=in action=allow protocol=TCP localport=3389
+          if [[ "$TAILSCALE_MODE" == "serve" && -z "${TAILSCALE_AUTHKEY:-}" ]]; then
+            echo "::error::tailscale_mode=serve requires secret TAILSCALE_AUTHKEY or TAILSCALE_AUTH_KEY."
+            exit 1
+          fi
 
-          Restart-Service -Name TermService -Force
-
-      - name: Create RDP User with Secure Password
-        run: |
-          $ErrorActionPreference = "Stop"
-
-          Add-Type -AssemblyName System.Security
-
-          $charSet = @{
-              Upper   = [char[]](65..90)
-              Lower   = [char[]](97..122)
-              Number  = [char[]](48..57)
-              Special = ([char[]](33..47) + [char[]](58..64) + [char[]](91..96) + [char[]](123..126))
-          }
-
-          $rawPassword = @()
-          $rawPassword += $charSet.Upper | Get-Random -Count 4
-          $rawPassword += $charSet.Lower | Get-Random -Count 4
-          $rawPassword += $charSet.Number | Get-Random -Count 4
-          $rawPassword += $charSet.Special | Get-Random -Count 4
-
-          $password = -join ($rawPassword | Sort-Object { Get-Random })
-          $securePass = ConvertTo-SecureString $password -AsPlainText -Force
-
-          New-LocalUser -Name "RDP" -Password $securePass -AccountNeverExpires
-          Add-LocalGroupMember -Group "Administrators" -Member "RDP"
-          Add-LocalGroupMember -Group "Remote Desktop Users" -Member "RDP"
-
-          echo "RDP_CREDS=User: RDP | Password: $password" >> $env:GITHUB_ENV
-
-          if (-not (Get-LocalUser -Name "RDP")) {
-              Write-Error "User creation failed"
+          case "$AUTH_CHOICE" in
+            openai-api-key)
+              [[ -n "${OPENAI_API_KEY:-}" ]] || {
+                echo "::error::Missing OPENAI_API_KEY secret."
+                exit 1
+              }
+              ;;
+            anthropic-api-key)
+              [[ -n "${ANTHROPIC_API_KEY:-}" ]] || {
+                echo "::error::Missing ANTHROPIC_API_KEY secret."
+                exit 1
+              }
+              ;;
+            openrouter-api-key)
+              [[ -n "${OPENROUTER_API_KEY:-}" ]] || {
+                echo "::error::Missing OPENROUTER_API_KEY secret."
+                exit 1
+              }
+              ;;
+            gemini-api-key)
+              [[ -n "${GEMINI_API_KEY:-}" ]] || {
+                echo "::error::Missing GEMINI_API_KEY secret."
+                exit 1
+              }
+              ;;
+            custom-api-key)
+              [[ -n "${CUSTOM_BASE_URL:-}" ]] || {
+                echo "::error::custom-api-key requires custom_base_url."
+                exit 1
+              }
+              [[ -n "${CUSTOM_MODEL_ID:-}" ]] || {
+                echo "::error::custom-api-key requires custom_model_id."
+                exit 1
+              }
+              ;;
+            skip)
+              echo "Running without a model provider. Control UI will come up, but chat will not be usable until you configure a model."
+              ;;
+            *)
+              echo "::error::Unsupported auth_choice: $AUTH_CHOICE"
               exit 1
-          }
+              ;;
+          esac
 
-      - name: Install Tailscale
+      - name: Connect runner to Tailscale
+        if: ${{ inputs.tailscale_mode == 'serve' }}
+        uses: tailscale/github-action@v4
+        with:
+          authkey: ${{ secrets.TAILSCALE_AUTHKEY || secrets.TAILSCALE_AUTH_KEY }}
+          version: latest
+
+      - name: Install OpenClaw
+        shell: bash
         run: |
-          $ErrorActionPreference = "Stop"
+          set -euo pipefail
 
-          $tsUrl = "https://pkgs.tailscale.com/stable/tailscale-setup-1.82.0-amd64.msi"
-          $installerPath = "$env:TEMP\tailscale.msi"
+          export OPENCLAW_RUN_HOME="$RUNNER_TEMP/openclaw-home"
+          export OPENCLAW_NO_PROMPT=1
 
-          Invoke-WebRequest -Uri $tsUrl -OutFile $installerPath
-          Start-Process msiexec.exe -ArgumentList "/i `"$installerPath`" /quiet /norestart" -Wait
-          Remove-Item $installerPath -Force
+          mkdir -p "$OPENCLAW_RUN_HOME"
+          echo "OPENCLAW_RUN_HOME=$OPENCLAW_RUN_HOME" >> "$GITHUB_ENV"
 
-      - name: Establish Tailscale Connection
+          curl -fsSL --proto '=https' --tlsv1.2 https://openclaw.ai/install.sh | bash -s -- --no-onboard
+
+          OPENCLAW_BIN="$(npm prefix -g)/bin"
+          echo "$OPENCLAW_BIN" >> "$GITHUB_PATH"
+          echo "OPENCLAW_BIN=$OPENCLAW_BIN" >> "$GITHUB_ENV"
+
+          "$OPENCLAW_BIN/openclaw" --version
+
+      - name: Onboard OpenClaw
+        shell: bash
         run: |
-          $ErrorActionPreference = "Stop"
+          set -euo pipefail
 
-          & "$env:ProgramFiles\Tailscale\tailscale.exe" up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} --hostname=gh-runner-$env:GITHUB_RUN_ID
+          export HOME="$OPENCLAW_RUN_HOME"
+          export PATH="$OPENCLAW_BIN:$PATH"
+          export OPENCLAW_GATEWAY_TOKEN="$(openssl rand -hex 32)"
 
-          $tsIP = $null
-          $retries = 0
+          echo "::add-mask::$OPENCLAW_GATEWAY_TOKEN"
+          echo "OPENCLAW_GATEWAY_TOKEN=$OPENCLAW_GATEWAY_TOKEN" >> "$GITHUB_ENV"
 
-          while (-not $tsIP -and $retries -lt 15) {
-              $tsIP = & "$env:ProgramFiles\Tailscale\tailscale.exe" ip -4
-              Start-Sleep -Seconds 5
-              $retries++
-          }
+          workspace_dir="$GITHUB_WORKSPACE/.openclaw-workspace"
+          mkdir -p "$workspace_dir"
 
-          if (-not $tsIP) {
-              Write-Error "Tailscale IP not assigned"
-              exit 1
-          }
+          cmd=(
+            openclaw onboard
+            --non-interactive
+            --mode local
+            --workspace "$workspace_dir"
+            --secret-input-mode ref
+            --gateway-port 18789
+            --gateway-bind loopback
+            --gateway-auth token
+            --gateway-token-ref-env OPENCLAW_GATEWAY_TOKEN
+            --no-install-daemon
+            --skip-channels
+            --skip-skills
+            --skip-health
+            --accept-risk
+          )
 
-          echo "TAILSCALE_IP=$tsIP" >> $env:GITHUB_ENV
+          if [[ "$TAILSCALE_MODE" == "serve" ]]; then
+            cmd+=(--tailscale serve)
+          fi
 
-      - name: Verify RDP Accessibility
+          case "$AUTH_CHOICE" in
+            openai-api-key)
+              cmd+=(--auth-choice openai-api-key)
+              ;;
+            anthropic-api-key)
+              cmd+=(--auth-choice anthropic-api-key)
+              ;;
+            openrouter-api-key)
+              cmd+=(--auth-choice openrouter-api-key)
+              ;;
+            gemini-api-key)
+              cmd+=(--auth-choice gemini-api-key)
+              ;;
+            custom-api-key)
+              cmd+=(
+                --auth-choice custom-api-key
+                --custom-base-url "$CUSTOM_BASE_URL"
+                --custom-model-id "$CUSTOM_MODEL_ID"
+                --custom-compatibility "$CUSTOM_COMPATIBILITY"
+              )
+
+              if [[ -n "${CUSTOM_PROVIDER_ID:-}" ]]; then
+                cmd+=(--custom-provider-id "$CUSTOM_PROVIDER_ID")
+              fi
+              ;;
+            skip)
+              cmd+=(--auth-choice skip)
+              ;;
+          esac
+
+          "${cmd[@]}"
+          openclaw doctor --non-interactive || true
+
+      - name: Run OpenClaw session
+        shell: bash
         run: |
-          $ErrorActionPreference = "Stop"
+          set -euo pipefail
 
-          Write-Host "Tailscale IP: $env:TAILSCALE_IP"
+          export HOME="$OPENCLAW_RUN_HOME"
+          export PATH="$OPENCLAW_BIN:$PATH"
+          gateway_log="$RUNNER_TEMP/openclaw-gateway.log"
+          tailscale_log="$RUNNER_TEMP/tailscale-status.json"
 
-          $testResult = Test-NetConnection -ComputerName $env:TAILSCALE_IP -Port 3389
-
-          if (-not $testResult.TcpTestSucceeded) {
-              Write-Error "RDP port 3389 not reachable"
-              exit 1
+          cleanup() {
+            if [[ -n "${APPROVER_PID:-}" ]]; then
+              kill "$APPROVER_PID" 2>/dev/null || true
+            fi
+            if [[ -n "${GATEWAY_PID:-}" ]]; then
+              kill "$GATEWAY_PID" 2>/dev/null || true
+              wait "$GATEWAY_PID" 2>/dev/null || true
+            fi
           }
+          trap cleanup EXIT
 
-          Write-Host "RDP is accessible!"
+          stdbuf -oL -eL openclaw gateway >"$gateway_log" 2>&1 &
+          GATEWAY_PID=$!
 
-      - name: Maintain Connection
-        run: |
-          Write-Host ""
-          Write-Host "===== RDP ACCESS ====="
-          Write-Host "IP       : $env:TAILSCALE_IP"
-          Write-Host "Username : RDP"
-          Write-Host "Password : $(echo $env:RDP_CREDS)"
-          Write-Host "======================"
-          Write-Host ""
+          for _ in $(seq 1 30); do
+            if openclaw gateway status >/dev/null 2>&1; then
+              break
+            fi
+            sleep 2
+          done
 
-          while ($true) {
-              Write-Host "[$(Get-Date)] RDP Active..."
-              Start-Sleep -Seconds 300
-          }
+          if ! openclaw gateway status >/dev/null 2>&1; then
+            echo "::error::Gateway failed to become ready."
+            tail -n 200 "$gateway_log" || true
+            exit 1
+          fi
+
+          (
+            while true; do
+              openclaw devices approve --latest >/dev/null 2>&1 || true
+              sleep 10
+            done
+          ) &
+          APPROVER_PID=$!
+
+          echo ""
+          echo "===== OPENCLAW RUNNER ====="
+          echo "Auth choice : $AUTH_CHOICE"
+          echo "Session     : ${SESSION_MINUTES} minutes"
+          echo "Workspace   : $GITHUB_WORKSPACE/.openclaw-workspace"
+          echo "Gateway log : $gateway_log"
+
+          if [[ "$TAILSCALE_MODE" == "serve" ]]; then
+            tailscale status --json >"$tailscale_log"
+            if command -v jq >/dev/null 2>&1; then
+              ts_dns="$(jq -r '.Self.DNSName // empty' "$tailscale_log" | sed 's/\.$//')"
+            else
+              ts_dns="$(grep -oE '\"DNSName\":\"[^\"]+\"' "$tailscale_log" | head -n 1 | cut -d '"' -f 4 | sed 's/\.$//')"
+            fi
+            if [[ -n "$ts_dns" ]]; then
+              echo "Control UI  : https://$ts_dns/"
+              echo "Pairing     : auto-approve loop is active"
+            else
+              echo "Control UI  : tailscale connected, but DNS name could not be resolved from status output"
+            fi
+          else
+            echo "Control UI  : local-only (set tailscale_mode=serve for remote access)"
+          fi
+
+          echo "==========================="
+          echo ""
+
+          remaining="$SESSION_MINUTES"
+          while (( remaining > 0 )); do
+            sleep_chunk=5
+            if (( remaining < sleep_chunk )); then
+              sleep_chunk="$remaining"
+            fi
+
+            sleep "$(( sleep_chunk * 60 ))"
+            remaining="$(( remaining - sleep_chunk ))"
+            echo "[$(date -u +'%Y-%m-%dT%H:%M:%SZ')] OpenClaw session alive. Minutes remaining: $remaining"
+          done
+
+      - name: Upload logs and config
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: openclaw-run-${{ github.run_id }}
+          if-no-files-found: warn
+          path: |
+            ${{ runner.temp }}/openclaw-gateway.log
+            ${{ runner.temp }}/tailscale-status.json
+            ${{ env.OPENCLAW_RUN_HOME }}/.openclaw
+            ${{ github.workspace }}/.openclaw-workspace
