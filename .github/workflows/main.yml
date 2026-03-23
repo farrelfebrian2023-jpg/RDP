@@ -355,6 +355,7 @@ jobs:
               exit 1
             fi
 
+            openclaw config set gateway.bind tailnet
             openclaw config set gateway.controlUi.allowedOrigins "[\"http://$TAILSCALE_IP:18789\"]" --strict-json
             openclaw config set gateway.controlUi.dangerouslyDisableDeviceAuth true
           fi
@@ -380,9 +381,6 @@ jobs:
           case "$TAILSCALE_MODE" in
             serve)
               gateway_cmd+=(--tailscale serve)
-              ;;
-            tailnet-ip)
-              gateway_cmd+=(--gateway-bind tailnet)
               ;;
           esac
 
