@@ -284,7 +284,9 @@ jobs:
             export OPENCLAW_ALLOW_INSECURE_PRIVATE_WS=1
           fi
 
-          echo "::add-mask::$OPENCLAW_GATEWAY_TOKEN"
+          if [[ "$TAILSCALE_MODE" != "tailnet-ip" ]]; then
+            echo "::add-mask::$OPENCLAW_GATEWAY_TOKEN"
+          fi
           echo "OPENCLAW_GATEWAY_TOKEN=$OPENCLAW_GATEWAY_TOKEN" >> "$GITHUB_ENV"
 
           workspace_dir="$GITHUB_WORKSPACE/.openclaw-workspace"
@@ -495,7 +497,9 @@ jobs:
             echo "gateway_token=${OPENCLAW_GATEWAY_TOKEN}" >> "$access_file"
             echo "note=tailnet-ip uses plain HTTP and sets gateway.controlUi.dangerouslyDisableDeviceAuth=true for this ephemeral run" >> "$access_file"
             echo "Control UI  : http://${TAILSCALE_IP}:18789/"
-            echo "Auth        : use the bootstrap URL or token saved in artifact openclaw-access.txt"
+            echo "Bootstrap   : http://${TAILSCALE_IP}:18789/#token=${OPENCLAW_GATEWAY_TOKEN}"
+            echo "Gateway token: ${OPENCLAW_GATEWAY_TOKEN}"
+            echo "Auth        : open the bootstrap URL above or paste the token into the dashboard"
             echo "Security    : break-glass mode; device auth disabled for this ephemeral run"
             if [[ "$AUTH_CHOICE" == "openai-codex" ]]; then
               echo "OAuth note  : UI is reachable over the tailnet IP, but Codex OAuth itself still needs imported oauth.json or a gateway-shell login flow"
