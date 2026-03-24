@@ -220,7 +220,10 @@ jobs:
           ui_build_log="$RUNNER_TEMP/openclaw-ui-build.log"
 
           mkdir -p "$OPENCLAW_RUN_HOME"
-          mkdir -p "$OPENCLAW_SOURCE_DIR"
+          if [[ -e "$OPENCLAW_SOURCE_DIR" && ! -d "$OPENCLAW_SOURCE_DIR/.git" ]]; then
+            echo "Removing stale non-git source dir: $OPENCLAW_SOURCE_DIR"
+            rm -rf "$OPENCLAW_SOURCE_DIR"
+          fi
 
           echo "Node before install: $(node --version)"
           echo "npm before install: $(npm --version)"
