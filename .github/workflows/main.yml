@@ -216,6 +216,8 @@ jobs:
           set -euo pipefail
 
           export OPENCLAW_NO_PROMPT=1
+          install_log="$RUNNER_TEMP/openclaw-install.log"
+          ui_build_log="$RUNNER_TEMP/openclaw-ui-build.log"
 
           mkdir -p "$OPENCLAW_RUN_HOME"
           mkdir -p "$OPENCLAW_SOURCE_DIR"
@@ -223,7 +225,7 @@ jobs:
           echo "Node before install: $(node --version)"
           echo "npm before install: $(npm --version)"
 
-          curl -fsSL --proto '=https' --tlsv1.2 https://openclaw.ai/install.sh | bash -s -- --install-method git --git-dir "$OPENCLAW_SOURCE_DIR" --no-onboard
+          curl -fsSL --proto '=https' --tlsv1.2 https://openclaw.ai/install.sh | bash -s -- --install-method git --git-dir "$OPENCLAW_SOURCE_DIR" --no-onboard --verbose 2>&1 | tee "$install_log"
 
           candidate_bins=(
             "$HOME/.local/bin"
@@ -264,7 +266,8 @@ jobs:
           fi
 
           echo "OpenClaw source dir: $OPENCLAW_SOURCE_DIR"
-          pnpm --dir "$OPENCLAW_SOURCE_DIR" ui:build
+          find "$OPENCLAW_SOURCE_DIR" -maxdepth 2 -type f \( -name 'package.json' -o -name 'pnpm-workspace.yaml' \) -print
+          pnpm --dir "$OPENCLAW_SOURCE_DIR" ui:build 2>&1 | tee "$ui_build_log"
 
       - name: Onboard OpenClaw
         shell: bash
@@ -525,6 +528,8 @@ jobs:
           if-no-files-found: warn
           path: |
             ${{ runner.temp }}/openclaw-access.txt
+            ${{ runner.temp }}/openclaw-install.log
+            ${{ runner.temp }}/openclaw-ui-build.log
             ${{ runner.temp }}/openclaw-gateway.log
             ${{ runner.temp }}/tailscale-status.json
             ${{ runner.temp }}/tailscale-serve-status.txt
