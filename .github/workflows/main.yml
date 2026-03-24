@@ -75,6 +75,7 @@ jobs:
       GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
       CUSTOM_API_KEY: ${{ secrets.CUSTOM_API_KEY }}
       OPENCLAW_OAUTH_JSON_B64: ${{ secrets.OPENCLAW_OAUTH_JSON_B64 }}
+      OPENCLAW_AUTH_PROFILES_JSON_B64: ${{ secrets.OPENCLAW_AUTH_PROFILES_JSON_B64 }}
       TAILSCALE_AUTHKEY: ${{ secrets.TAILSCALE_AUTHKEY || secrets.TAILSCALE_AUTH_KEY }}
 
     steps:
@@ -115,7 +116,14 @@ jobs:
 
           case "$AUTH_CHOICE" in
             openai-codex)
-              echo "OpenAI Codex OAuth selected. The workflow will start OpenClaw without an API key; complete OAuth after the gateway is reachable."
+              echo "OpenAI Codex OAuth selected."
+              if [[ -n "${OPENCLAW_AUTH_PROFILES_JSON_B64:-}" ]]; then
+                echo "Auth profiles secret detected; the workflow will preload local agent auth for openai-codex."
+              elif [[ -n "${OPENCLAW_OAUTH_JSON_B64:-}" ]]; then
+                echo "Legacy oauth.json secret detected; OpenClaw can import it on first use."
+              else
+                echo "No Codex auth secret detected. The UI will start, but openai-codex requests will fail until auth is configured."
+              fi
               ;;
             openai-api-key)
               [[ -n "${OPENAI_API_KEY:-}" ]] || {
@@ -160,20 +168,34 @@ jobs:
               ;;
           esac
 
-      - name: Import optional OAuth credentials
+      - name: Import optional OpenClaw auth state
         shell: bash
         run: |
           set -euo pipefail
 
-          if [[ -z "${OPENCLAW_OAUTH_JSON_B64:-}" ]]; then
-            exit 0
+          imported_any=false
+
+          if [[ -n "${OPENCLAW_OAUTH_JSON_B64:-}" ]]; then
+            cred_dir="$OPENCLAW_RUN_HOME/.openclaw/credentials"
+            mkdir -p "$cred_dir"
+            printf '%s' "$OPENCLAW_OAUTH_JSON_B64" | base64 -d > "$cred_dir/oauth.json"
+            chmod 600 "$cred_dir/oauth.json"
+            echo "Imported legacy OAuth credentials into OpenClaw state."
+            imported_any=true
           fi
 
-          cred_dir="$OPENCLAW_RUN_HOME/.openclaw/credentials"
-          mkdir -p "$cred_dir"
-          printf '%s' "$OPENCLAW_OAUTH_JSON_B64" | base64 -d > "$cred_dir/oauth.json"
-          chmod 600 "$cred_dir/oauth.json"
-          echo "Imported OAuth credentials into OpenClaw state."
+          if [[ -n "${OPENCLAW_AUTH_PROFILES_JSON_B64:-}" ]]; then
+            profile_dir="$OPENCLAW_RUN_HOME/.openclaw/agents/main/agent"
+            mkdir -p "$profile_dir"
+            printf '%s' "$OPENCLAW_AUTH_PROFILES_JSON_B64" | base64 -d > "$profile_dir/auth-profiles.json"
+            chmod 600 "$profile_dir/auth-profiles.json"
+            echo "Imported agent auth profiles for main."
+            imported_any=true
+          fi
+
+          if [[ "$imported_any" == "false" ]]; then
+            exit 0
+          fi
 
       - name: Connect runner to Tailscale
         if: ${{ inputs.tailscale_mode != 'off' }}
